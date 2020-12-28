@@ -3,48 +3,68 @@
 
 
 import os
+import sqlalchemy
 
-from collections import namedtuple
-from bs4 import BeautifulSoup
+from sqlalchemy import create_engine
+from sqlalchemy.orm import mapper
+from sqlalchemy.orm import sessionmaker
 
-FILE = os.path.expanduser('~/Downloads/report.htm')
+import contracts_database_model as dbm
+import config
 
-Transaction = namedtuple('Transaction', 'date_time transaction_number order_number instrument direction quantity price commission')
+from aux import get_transactions
 
-def re_encode_file(file, _initial_encoding='windows-1251', _result_encoding='utf-8'):
-    path = os.path.dirname(file)
-    file_name, file_ext = os.path.splitext(os.path.basename(file))
-    out_file = file_name + '_re_encoded' + file_ext
-    out_path = os.path.join(path, out_file)
-    with open(file, 'r', encoding=_initial_encoding) as f_in:
-        with open(out_path, 'w') as f_out:
-            content = f_in.read()
-            content.encode(_result_encoding)
-            f_out.write(content)
-    print('done')
+
+mapper(dbm.Contract, dbm.contracts, column_prefix='_')
+
+
+class PortfolioAnalyser():
+
+    def __init__(self, path):
+        self.db_path = os.path.join(path, 'portfolio_db.sqlite3')
+        self.engine = create_engine('sqlite:///' + self.db_path)
+        dbm.metadata.create_all(bind=self.engine)
+        Session = sessionmaker(bind=self.engine)
+        self.session = Session()
+
+    def update(self, file):
+        transactions = get_transactions(file)
+        existed_contracts = self.session.query(dbm.Contract).all()
+        print(f'existed_contracts: {len(existed_contracts)}')
+        for contract in existed_contracts:
+            print(contract)
+
+        existed_transaction_numbers = [contract.transaction_number for contract in existed_contracts]
+
+        for transaction in transactions:
+            if transaction.transaction_number not in existed_transaction_numbers:
+                contract = dbm.Contract(transaction)
+                print(contract)
+                self.session.add(contract)
+
+        try:
+            self.session.commit()
+        except sqlalchemy.exc.SQLAlchemyError as err:
+            print(err)
+            self.session.rollback()
+            print('Rolled back!')
+        else:
+            print('<<< Database updated! >>>')
+        return None
+
+    def __repr__(self):
+        return f'Portfolio <({self.db_path})>'
 
 
 if __name__ == '__main__':
     print('*'*125)
 
-    with open(FILE, 'r') as f:
-        content = f.read()
-        soup = BeautifulSoup(content, 'lxml')
+    config = config.Config()
+    db_path = config.PORTFOLIO_DB_BASEDIR
+    source_data_path = config.HTM_FILE_PATH
 
-        for row in soup.find_all('tr')[2:]:
-            # print('='*125)
-            # print(f'Length: {len(row)}')
-            res = []
-            for cell in row.find_all('td'):
-                res.append(cell.get_text())
-            # print(f'Length: {len(res)}', res)
-            transaction = Transaction(date_time=res[0],
-                                      transaction_number=res[1],
-                                      order_number=res[2],
-                                      instrument=res[3],
-                                      direction=res[6],
-                                      quantity=res[7],
-                                      price=res[8],
-                                      commission=res[15])
-            print(transaction)
-    # re_encode_file(FILE)
+    analyser = PortfolioAnalyser(db_path)
+    print(analyser)
+    print('Updating...')
+    analyser.update(source_data_path)
+    print('Done!')
